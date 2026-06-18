@@ -1,44 +1,29 @@
-# syntax=docker/dockerfile:1.7
+# 1. Chọn hệ điều hành nền Python cực nhẹ
+FROM python:3.10-slim
 
-FROM python:3.11-slim AS builder
+# 2. Cài đặt curl để xài cho lệnh HEALTHCHECK (kiểm tra sức khỏe app)
+RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
 
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-
-WORKDIR /build
-
-RUN python -m venv /opt/venv
-
-COPY requirements.txt .
-
-RUN /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
-    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
-
-
-FROM python:3.11-slim AS runtime
-
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV PATH="/opt/venv/bin:$PATH"
-ENV APP_HOST=0.0.0.0
-ENV APP_PORT=8000
-ENV AUTH_TOKEN=local-dev-token
-
+# 3. Chuyển vào thư mục làm việc chính
 WORKDIR /app
 
-RUN addgroup --system appgroup \
-    && adduser --system --ingroup appgroup --home /app appuser
+# 4. Copy file thư viện vào và cài đặt (làm trước để tận dụng cache)
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-COPY --from=builder /opt/venv /opt/venv
+# 5. Copy toàn bộ mã nguồn của nhóm vào container
 COPY src/ ./src/
 
-RUN chown -R appuser:appgroup /app
-
+# 6. YÊU CẦU BẮT BUỘC: Tạo non-root user để tăng tính bảo mật
+RUN useradd -m appuser && chown -R appuser:appuser /app
 USER appuser
 
+# 7. Mở cổng 8000 để bên ngoài gọi vào được
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()" || exit 1
+# 8. YÊU CẦU BẮT BUỘC: Cấu hình bắt mạch tự động cho service
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD curl -f http://localhost:8000/health || exit 1
 
-CMD ["sh", "-c", "uvicorn iot_app.main:app --app-dir src --host ${APP_HOST} --port ${APP_PORT}"]
+# 9. Lệnh khởi động app khi Container chạy
+CMD ["uvicorn", "iot_app.main:app", "--app-dir", "src", "--host", "0.0.0.0", "--port", "8000"]
